@@ -8,7 +8,10 @@ import {
   limit, 
   getDocFromServer, 
   doc,
-  deleteDoc
+  deleteDoc,
+  writeBatch,
+  getDocs,
+  where
 } from 'firebase/firestore';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { 
@@ -22,25 +25,35 @@ import {
   LogIn, 
   Activity,
   AlertCircle,
-  Info
+  Info,
+  User as UserIcon,
+  Settings,
+  X,
+  Mail,
+  UserCircle
 } from 'lucide-react';
 import * as d3 from 'd3';
 import Papa from 'papaparse';
 import { useDropzone } from 'react-dropzone';
 import { motion, AnimatePresence } from 'motion/react';
 
-import { db, auth, signIn, logOut } from './firebase';
+import { db, auth, signIn, logOut, updateProfile, deleteUser } from './firebase';
 import { cn } from './lib/utils';
 import { NoiseMeasurement, OperationType, FirestoreErrorInfo } from './types';
 
 // --- Error Handling ---
 function getNoiseColor(db: number) {
   return d3.scaleLinear<string>()
-    .domain([0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140])
+    .domain([0, 20, 40, 60, 80, 100, 120, 140])
     .range([
-      "#0088CC", "#0099AA", "#00AA88", "#00CC44", "#88CC44", 
-      "#AACC44", "#DDDD44", "#FFFF44", "#FFCC44", "#FF8844", 
-      "#FF6644", "#FF4444", "#FF0000", "#FF0088", "#CC0088"
+      "#10b981", // Emerald (Low)
+      "#34d399", // Emerald Light
+      "#fbbf24", // Amber (Med)
+      "#f97316", // Orange
+      "#ef4444", // Red (High)
+      "#dc2626", // Red Dark
+      "#7c3aed", // Violet (Extreme)
+      "#4c1d95"  // Violet Dark
     ])(db);
 }
 
@@ -120,6 +133,61 @@ class ErrorBoundary extends React.Component<any, any> {
 
 // --- Components ---
 
+const FrequencySpectrum = ({ data }: { data: Uint8Array }) => {
+  const svgRef = useRef<SVGSVGElement>(null);
+
+  useEffect(() => {
+    if (!svgRef.current || data.length === 0) return;
+
+    const svg = d3.select(svgRef.current);
+    const width = svgRef.current.clientWidth;
+    const height = svgRef.current.clientHeight;
+    const margin = { bottom: 15 };
+    const chartHeight = height - margin.bottom;
+    const barWidth = width / data.length;
+
+    // Draw bars
+    svg.selectAll('rect')
+      .data(Array.from(data))
+      .join('rect')
+      .attr('x', (_, i) => i * barWidth)
+      .attr('y', d => chartHeight - (d / 255) * chartHeight)
+      .attr('width', Math.max(0, barWidth - 1))
+      .attr('height', d => (d / 255) * chartHeight)
+      .attr('fill', d => d3.interpolateTurbo(d / 255));
+
+    // Add labels if they don't exist
+    if (svg.select('.labels').empty()) {
+      const labels = svg.append('g').attr('class', 'labels');
+      const labelPoints = [
+        { x: 0, text: '20Hz' },
+        { x: width * 0.25, text: '5kHz' },
+        { x: width * 0.5, text: '10kHz' },
+        { x: width * 0.75, text: '15kHz' },
+        { x: width, text: '20kHz', anchor: 'end' }
+      ];
+
+      labels.selectAll('text')
+        .data(labelPoints)
+        .enter()
+        .append('text')
+        .attr('x', d => d.x)
+        .attr('y', height - 2)
+        .attr('text-anchor', d => d.anchor || 'start')
+        .attr('fill', '#4b5563')
+        .attr('font-size', '8px')
+        .attr('font-family', 'monospace')
+        .text(d => d.text);
+    }
+  }, [data]);
+
+  return (
+    <div className="w-full h-32 bg-black/20 rounded-xl overflow-hidden border border-white/5">
+      <svg ref={svgRef} className="w-full h-full" />
+    </div>
+  );
+};
+
 const NoiseHeatmap = ({ data }: { data: NoiseMeasurement[] }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const [selectedPoint, setSelectedPoint] = useState<NoiseMeasurement | null>(null);
@@ -175,14 +243,25 @@ const NoiseHeatmap = ({ data }: { data: NoiseMeasurement[] }) => {
       .attr("cy", d => yScale(d.lat))
       .attr("r", 8)
       .attr("fill", d => colorScale(d.db))
-      .attr("opacity", 0.6)
-      .attr("stroke", "#fff")
-      .attr("stroke-width", 0.5)
+      .attr("opacity", 0.8)
+      .attr("filter", "blur(2px)")
       .attr("cursor", "pointer")
       .on("click", (event, d) => {
         event.stopPropagation();
         setSelectedPoint(d);
       });
+
+    const dots = g.selectAll(".dot")
+      .data(data)
+      .enter()
+      .append("circle")
+      .attr("class", "dot")
+      .attr("cx", d => xScale(d.lng))
+      .attr("cy", d => yScale(d.lat))
+      .attr("r", 3)
+      .attr("fill", "#fff")
+      .attr("opacity", 0.9)
+      .attr("pointer-events", "none");
 
     // Zoom behavior
     const zoom = d3.zoom<SVGSVGElement, unknown>()
@@ -194,7 +273,7 @@ const NoiseHeatmap = ({ data }: { data: NoiseMeasurement[] }) => {
         // Rescale axes if needed, but for a simple heatmap we can just transform the group
         // To keep circles same size during zoom:
         circles.attr("r", 8 / transform.k);
-        circles.attr("stroke-width", 0.5 / transform.k);
+        dots.attr("r", 3 / transform.k);
       });
 
     svg.call(zoom);
@@ -225,7 +304,7 @@ const NoiseHeatmap = ({ data }: { data: NoiseMeasurement[] }) => {
   }, [data]);
 
   return (
-    <div className="w-full h-full min-h-[400px] bg-[#1a1b1e] rounded-xl border border-white/5 relative overflow-hidden">
+    <div className="w-full h-full min-h-[400px] bg-black/40 rounded-xl border border-white/5 relative overflow-hidden">
       <svg ref={svgRef} className="w-full h-full" />
       
       {/* Detail Overlay */}
@@ -287,8 +366,12 @@ const NoiseMapper = () => {
   const [measurements, setMeasurements] = useState<NoiseMeasurement[]>([]);
   const [isRecording, setIsRecording] = useState(false);
   const [currentDb, setCurrentDb] = useState(0);
+  const [frequencyData, setFrequencyData] = useState<Uint8Array>(new Uint8Array(0));
   const [location, setLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
+  const [newDisplayName, setNewDisplayName] = useState('');
+  const [isUpdatingProfile, setIsUpdatingProfile] = useState(false);
 
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
@@ -299,6 +382,7 @@ const NoiseMapper = () => {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
       setUser(u);
+      if (u) setNewDisplayName(u.displayName || '');
       setIsAuthReady(true);
     });
     return () => unsubscribe();
@@ -349,7 +433,7 @@ const NoiseMapper = () => {
 
       const source = audioContext.createMediaStreamSource(stream);
       const analyser = audioContext.createAnalyser();
-      analyser.fftSize = 256;
+      analyser.fftSize = 512;
       source.connect(analyser);
       analyserRef.current = analyser;
 
@@ -371,8 +455,11 @@ const NoiseMapper = () => {
   const updateNoiseLevel = () => {
     if (!analyserRef.current) return;
 
-    const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
+    const bufferLength = analyserRef.current.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
     analyserRef.current.getByteFrequencyData(dataArray);
+    
+    setFrequencyData(new Uint8Array(dataArray));
 
     const sum = dataArray.reduce((acc, val) => acc + val, 0);
     const average = sum / dataArray.length;
@@ -461,28 +548,83 @@ const NoiseMapper = () => {
     }
   };
 
+  const handleUpdateProfile = async () => {
+    if (!user || !newDisplayName.trim()) return;
+    setIsUpdatingProfile(true);
+    try {
+      await updateProfile(user, { displayName: newDisplayName });
+      setUser({ ...user, displayName: newDisplayName } as User);
+      alert("Profile updated successfully!");
+    } catch (error) {
+      console.error("Error updating profile:", error);
+      alert("Failed to update profile.");
+    } finally {
+      setIsUpdatingProfile(false);
+    }
+  };
+
+  const handleDeleteAccount = async () => {
+    if (!user) return;
+    const confirmDelete = window.confirm(
+      "Are you absolutely sure? This will permanently delete your account and ALL your noise measurements. This action cannot be undone."
+    );
+    if (!confirmDelete) return;
+
+    setIsUpdatingProfile(true);
+    try {
+      // 1. Delete all noise measurements
+      const q = query(collection(db, 'noise_measurements'), where('uid', '==', user.uid));
+      const querySnapshot = await getDocs(q);
+      const batch = writeBatch(db);
+      querySnapshot.forEach((doc) => {
+        batch.delete(doc.ref);
+      });
+      await batch.commit();
+
+      // 2. Delete the user document if it exists
+      await deleteDoc(doc(db, 'users', user.uid));
+
+      // 3. Delete the auth account
+      await deleteUser(user);
+      
+      alert("Account and data deleted successfully.");
+      window.location.reload();
+    } catch (error: any) {
+      console.error("Error deleting account:", error);
+      if (error.code === 'auth/requires-recent-login') {
+        alert("This operation is sensitive and requires recent authentication. Please log out and log back in, then try again.");
+      } else {
+        alert("Failed to delete account. Please try again later.");
+      }
+    } finally {
+      setIsUpdatingProfile(false);
+    }
+  };
+
   if (!isAuthReady) return null;
 
   if (!user) {
     return (
-      <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center p-6 font-sans">
+      <div className="min-h-screen bg-[#050505] flex items-center justify-center p-6 font-sans relative overflow-hidden">
+        <div className="atmosphere" />
         <motion.div 
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="max-w-md w-full bg-[#151619] border border-white/5 rounded-2xl p-10 text-center shadow-2xl"
+          className="max-w-md w-full glass-card p-12 text-center relative z-10"
         >
-          <div className="w-16 h-16 bg-orange-500/10 rounded-full flex items-center justify-center mx-auto mb-6">
-            <Activity className="w-8 h-8 text-orange-500" />
+          <div className="w-20 h-20 bg-orange-500/10 rounded-3xl flex items-center justify-center mx-auto mb-8 rotate-12 group hover:rotate-0 transition-transform duration-500">
+            <Activity className="w-10 h-10 text-orange-500" />
           </div>
-          <h1 className="text-3xl font-bold text-white mb-2 tracking-tight">Urban Noise Mapper</h1>
-          <p className="text-gray-400 mb-8 leading-relaxed">
-            Help us map noise pollution in your city. Record, tag, and visualize sound levels in real-time.
+          <h1 className="text-4xl font-bold text-white mb-2 tracking-tighter">Urban Noise Mapper</h1>
+          <p className="text-[10px] text-orange-500 font-mono uppercase tracking-[0.2em] mb-8">App created by Aritra Pal</p>
+          <p className="text-gray-400 mb-10 leading-relaxed text-sm">
+            Join the mission to map urban noise pollution. Help us identify hotspots and create quieter, healthier cities through real-time data.
           </p>
           <button 
             onClick={signIn}
-            className="w-full py-4 bg-orange-500 hover:bg-orange-600 text-white font-bold rounded-xl transition-all flex items-center justify-center gap-3 shadow-lg shadow-orange-500/20"
+            className="w-full py-4 bg-white text-black hover:bg-orange-500 hover:text-white font-bold rounded-xl transition-all flex items-center justify-center gap-3 shadow-xl group"
           >
-            <LogIn className="w-5 h-5" />
+            <LogIn className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
             Sign in with Google
           </button>
         </motion.div>
@@ -491,19 +633,30 @@ const NoiseMapper = () => {
   }
 
   return (
-    <div className="min-h-screen bg-[#0a0a0a] text-white font-sans selection:bg-orange-500/30">
+    <div className="min-h-screen bg-[#050505] text-white font-sans selection:bg-orange-500/30 relative overflow-x-hidden">
+      <div className="atmosphere" />
+      
       {/* Header */}
-      <header className="border-b border-white/5 bg-[#151619]/50 backdrop-blur-md sticky top-0 z-50">
+      <header className="glass-panel sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Activity className="w-6 h-6 text-orange-500" />
-            <span className="font-bold tracking-tight text-lg uppercase">Noise Mapper</span>
+            <div className="flex flex-col">
+              <span className="font-bold tracking-tight text-lg uppercase leading-none">Noise Mapper</span>
+              <span className="text-[10px] text-gray-500 font-mono uppercase tracking-widest mt-1">App created by Aritra Pal</span>
+            </div>
           </div>
           <div className="flex items-center gap-4">
-            <div className="hidden sm:flex flex-col items-end">
-              <span className="text-xs text-gray-400 font-mono uppercase tracking-widest">Operator</span>
-              <span className="text-sm font-medium">{user.displayName}</span>
-            </div>
+            <button 
+              onClick={() => setIsProfileOpen(true)}
+              className="hidden sm:flex flex-col items-end hover:opacity-80 transition-opacity"
+            >
+              <span className="text-[10px] font-mono text-gray-400 font-bold uppercase tracking-widest mb-0.5">Operator</span>
+              <span className="text-sm font-medium flex items-center gap-2">
+                {user.displayName}
+                <Settings className="w-3 h-3 text-orange-500" />
+              </span>
+            </button>
             <button 
               onClick={logOut}
               className="p-2 hover:bg-white/5 rounded-lg transition-colors text-gray-400 hover:text-white"
@@ -514,12 +667,105 @@ const NoiseMapper = () => {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+      {/* Profile Modal */}
+      <AnimatePresence>
+        {isProfileOpen && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-6">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsProfileOpen(false)}
+              className="absolute inset-0 bg-black/80 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="relative w-full max-w-md bg-[#151619] border border-white/10 rounded-2xl shadow-2xl overflow-hidden"
+            >
+              <div className="p-6 border-b border-white/5 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <UserCircle className="w-5 h-5 text-orange-500" />
+                  <h2 className="font-bold uppercase tracking-widest text-sm">Account Settings</h2>
+                </div>
+                <button 
+                  onClick={() => setIsProfileOpen(false)}
+                  className="p-2 hover:bg-white/5 rounded-lg transition-colors text-gray-400 hover:text-white"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="p-8 space-y-8">
+                {/* User Info */}
+                <div className="flex items-center gap-4 p-4 bg-white/5 rounded-xl border border-white/5">
+                  <div className="w-12 h-12 rounded-full bg-orange-500/20 flex items-center justify-center">
+                    {user.photoURL ? (
+                      <img src={user.photoURL} alt="" className="w-full h-full rounded-full object-cover" referrerPolicy="no-referrer" />
+                    ) : (
+                      <UserIcon className="w-6 h-6 text-orange-500" />
+                    )}
+                  </div>
+                  <div>
+                    <div className="text-sm font-bold">{user.displayName}</div>
+                    <div className="text-xs text-gray-500 flex items-center gap-1">
+                      <Mail className="w-3 h-3" />
+                      {user.email}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Edit Section */}
+                <div className="space-y-4">
+                  <div>
+                    <label className="text-[10px] font-mono text-gray-500 uppercase tracking-widest mb-2 block">Display Name</label>
+                    <input 
+                      type="text" 
+                      value={newDisplayName}
+                      onChange={(e) => setNewDisplayName(e.target.value)}
+                      className="w-full bg-black/30 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-orange-500/50 transition-colors"
+                      placeholder="Enter display name"
+                    />
+                  </div>
+                  <button 
+                    onClick={handleUpdateProfile}
+                    disabled={isUpdatingProfile || newDisplayName === user.displayName}
+                    className="w-full py-3 bg-white/5 hover:bg-white/10 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl text-sm font-bold transition-all"
+                  >
+                    {isUpdatingProfile ? "Updating..." : "Save Changes"}
+                  </button>
+                </div>
+
+                {/* Danger Zone */}
+                <div className="pt-6 border-t border-white/5">
+                  <div className="mb-4">
+                    <h3 className="text-xs font-bold text-red-500 uppercase tracking-widest mb-1">Danger Zone</h3>
+                    <p className="text-[10px] text-gray-500">Permanently delete your account and all associated noise data.</p>
+                  </div>
+                  <button 
+                    onClick={handleDeleteAccount}
+                    className="w-full py-3 border border-red-500/30 hover:bg-red-500/10 text-red-500 rounded-xl text-sm font-bold transition-all flex items-center justify-center gap-2"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    Delete Account
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      <main className="max-w-7xl mx-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 relative z-10">
         {/* Left Column: Controls & Real-time */}
         <div className="lg:col-span-4 space-y-6">
           {/* Recording Widget */}
-          <div className="bg-[#151619] border border-white/5 rounded-2xl p-6 shadow-xl relative overflow-hidden">
-            <div className="mb-6">
+          <div className="glass-card p-6 relative overflow-hidden group">
+            <div className="absolute inset-0 bg-gradient-to-br from-orange-500/5 to-purple-500/5 opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
+            
+            <div className="relative z-10">
+              <div className="mb-6">
               <h3 className="text-[10px] font-mono text-orange-500 uppercase tracking-widest mb-2">Objective</h3>
               <p className="text-xs text-gray-400 leading-relaxed">
                 Map urban noise levels using phone-based measurements to identify pollution hotspots and inform urban planning.
@@ -580,6 +826,15 @@ const NoiseMapper = () => {
               </div>
             </div>
 
+            {/* Frequency Spectrum Section */}
+            <div className="mt-6 pt-6 border-t border-white/5">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-[10px] font-mono text-gray-500 uppercase tracking-widest">Frequency Spectrum</h3>
+                <span className="text-[10px] font-mono text-orange-500">20Hz - 20kHz</span>
+              </div>
+              <FrequencySpectrum data={frequencyData} />
+            </div>
+
             <button 
               disabled={!isRecording || !location || isUploading}
               onClick={saveMeasurement}
@@ -593,40 +848,13 @@ const NoiseMapper = () => {
               {isUploading ? "Transmitting..." : "Log Measurement"}
             </button>
           </div>
-
-          {/* Data Management */}
-          <div className="bg-[#151619] border border-white/5 rounded-2xl p-6 space-y-4">
-            <h3 className="text-xs font-mono text-gray-500 uppercase tracking-widest mb-4">Data Management</h3>
-            
-            <button 
-              onClick={downloadCSV}
-              className="w-full flex items-center justify-between p-4 bg-white/5 hover:bg-white/10 rounded-xl transition-colors group"
-            >
-              <div className="flex items-center gap-3">
-                <Download className="w-5 h-5 text-blue-400" />
-                <span className="text-sm font-medium">Export CSV</span>
-              </div>
-              <span className="text-[10px] font-mono text-gray-500 group-hover:text-gray-300">.csv</span>
-            </button>
-
-            <div {...getRootProps()} className={cn(
-              "w-full p-4 border-2 border-dashed rounded-xl transition-all cursor-pointer text-center",
-              isDragActive ? "border-orange-500 bg-orange-500/5" : "border-white/10 hover:border-white/20"
-            )}>
-              <input {...getInputProps()} />
-              <div className="flex flex-col items-center gap-2">
-                <Upload className="w-5 h-5 text-orange-500" />
-                <span className="text-sm font-medium">Import CSV</span>
-                <span className="text-[10px] text-gray-500">Drop or click to upload</span>
-              </div>
-            </div>
-          </div>
         </div>
+      </div>
 
         {/* Right Column: Visualization & History */}
         <div className="lg:col-span-8 space-y-6">
           {/* Heatmap */}
-          <div className="bg-[#151619] border border-white/5 rounded-2xl p-6 shadow-xl h-[500px] flex flex-col">
+          <div className="glass-card p-6 h-[500px] flex flex-col">
             <div className="flex items-center justify-between mb-6">
               <div className="flex items-center gap-2">
                 <MapIcon className="w-5 h-5 text-orange-500" />
@@ -649,8 +877,8 @@ const NoiseMapper = () => {
           </div>
 
           {/* Recent Logs */}
-          <div className="bg-[#151619] border border-white/5 rounded-2xl overflow-hidden shadow-xl">
-            <div className="p-6 border-b border-white/5 flex items-center justify-between">
+          <div className="glass-card overflow-hidden">
+            <div className="p-6 border-b border-white/5 flex items-center justify-between bg-white/[0.02]">
               <h2 className="font-bold uppercase tracking-widest text-sm">My Recent Logs</h2>
               <span className="text-[10px] font-mono text-gray-500">
                 {measurements.filter(m => m.uid === user.uid).length} Records
@@ -684,8 +912,11 @@ const NoiseMapper = () => {
                           <div className="flex items-center gap-2">
                             <div className="w-12 h-1.5 bg-white/5 rounded-full overflow-hidden">
                               <div 
-                                className="h-full bg-orange-500" 
-                                style={{ width: `${Math.min(100, (m.db / 140) * 100)}%` }}
+                                className="h-full" 
+                                style={{ 
+                                  width: `${Math.min(100, (m.db / 140) * 100)}%`,
+                                  backgroundColor: getNoiseColor(m.db)
+                                }}
                               />
                             </div>
                             <span className="text-sm font-mono font-bold">{m.db} dB</span>
@@ -694,9 +925,10 @@ const NoiseMapper = () => {
                         <td className="p-4">
                           <span className={cn(
                             "text-[10px] font-mono px-2 py-0.5 rounded-full uppercase tracking-widest",
-                            m.db > 120 ? "bg-red-500/20 text-red-400" : 
-                            m.db > 80 ? "bg-orange-500/20 text-orange-400" : 
-                            "bg-green-500/20 text-green-400"
+                            m.db > 120 ? "bg-purple-500/20 text-purple-400" : 
+                            m.db > 80 ? "bg-red-500/20 text-red-400" : 
+                            m.db > 60 ? "bg-amber-500/20 text-amber-400" :
+                            "bg-emerald-500/20 text-emerald-400"
                           )}>
                             {getNoiseQuality(m.db)}
                           </span>
@@ -722,6 +954,39 @@ const NoiseMapper = () => {
                   NO PERSONAL RECORDS FOUND
                 </div>
               )}
+            </div>
+          </div>
+
+          {/* Data Management */}
+          <div className="glass-card p-6 space-y-4">
+            <h3 className="text-xs font-mono text-gray-500 uppercase tracking-widest mb-4">Data Management</h3>
+            
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <button 
+                onClick={downloadCSV}
+                className="flex items-center justify-between p-4 bg-white/5 hover:bg-white/10 rounded-xl transition-colors group border border-white/5"
+              >
+                <div className="flex items-center gap-3">
+                  <Download className="w-5 h-5 text-blue-400" />
+                  <div className="text-left">
+                    <span className="text-sm font-medium block">Download My Data</span>
+                    <span className="text-[10px] text-gray-500">Save your records to your device</span>
+                  </div>
+                </div>
+                <span className="text-[10px] font-mono text-gray-500 group-hover:text-gray-300">.csv</span>
+              </button>
+
+              <div {...getRootProps()} className={cn(
+                "p-4 border-2 border-dashed rounded-xl transition-all cursor-pointer text-center flex flex-col items-center justify-center gap-2",
+                isDragActive ? "border-orange-500 bg-orange-500/5" : "border-white/10 hover:border-white/20"
+              )}>
+                <input {...getInputProps()} />
+                <Upload className="w-5 h-5 text-orange-500" />
+                <div className="text-center">
+                  <span className="text-sm font-medium block">Upload Existing Data</span>
+                  <span className="text-[10px] text-gray-500">Load records from a file</span>
+                </div>
+              </div>
             </div>
           </div>
         </div>
