@@ -13,7 +13,6 @@ import {
   getDocs,
   where
 } from 'firebase/firestore';
-import { onAuthStateChanged, User } from 'firebase/auth';
 import { 
   Mic, 
   MicOff, 
@@ -21,15 +20,11 @@ import {
   Upload, 
   Download, 
   Trash2, 
-  LogOut, 
-  LogIn, 
   Activity,
   AlertCircle,
   Info,
-  User as UserIcon,
   Settings,
   X,
-  Mail,
   UserCircle
 } from 'lucide-react';
 import * as d3 from 'd3';
@@ -37,7 +32,7 @@ import Papa from 'papaparse';
 import { useDropzone } from 'react-dropzone';
 import { motion, AnimatePresence } from 'motion/react';
 
-import { db, auth, signIn, logOut, updateProfile, deleteUser } from './firebase';
+import { db } from './firebase';
 import { cn } from './lib/utils';
 import { NoiseMeasurement, OperationType, FirestoreErrorInfo } from './types';
 
@@ -71,17 +66,12 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-      isAnonymous: auth.currentUser?.isAnonymous,
-      tenantId: auth.currentUser?.tenantId,
-      providerInfo: auth.currentUser?.providerData.map(provider => ({
-        providerId: provider.providerId,
-        displayName: provider.displayName,
-        email: provider.email,
-        photoUrl: provider.photoURL
-      })) || []
+      userId: 'public',
+      email: 'public',
+      emailVerified: false,
+      isAnonymous: true,
+      tenantId: '',
+      providerInfo: []
     },
     operationType,
     path
@@ -361,8 +351,7 @@ const NoiseHeatmap = ({ data }: { data: NoiseMeasurement[] }) => {
 };
 
 const NoiseMapper = () => {
-  const [user, setUser] = useState<User | null>(null);
-  const [isAuthReady, setIsAuthReady] = useState(false);
+  const [localUserId, setLocalUserId] = useState<string>('');
   const [measurements, setMeasurements] = useState<NoiseMeasurement[]>([]);
   const [isRecording, setIsRecording] = useState(false);
   const [currentDb, setCurrentDb] = useState(0);
@@ -370,30 +359,23 @@ const NoiseMapper = () => {
   const [location, setLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
-  const [newDisplayName, setNewDisplayName] = useState('');
-  const [isUpdatingProfile, setIsUpdatingProfile] = useState(false);
 
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const animationFrameRef = useRef<number | null>(null);
 
-  // --- Auth & Data ---
+  // --- Local User ID & Data ---
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (u) => {
-      setUser(u);
-      if (u) setNewDisplayName(u.displayName || '');
-      setIsAuthReady(true);
-    });
-    return () => unsubscribe();
+    let id = localStorage.getItem('noise_mapper_uid');
+    if (!id) {
+      id = crypto.randomUUID();
+      localStorage.setItem('noise_mapper_uid', id);
+    }
+    setLocalUserId(id);
   }, []);
 
   useEffect(() => {
-    if (!isAuthReady || !user) {
-      setMeasurements([]);
-      return;
-    }
-
     const q = query(collection(db, 'noise_measurements'), orderBy('timestamp', 'desc'), limit(100));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as NoiseMeasurement));
@@ -403,7 +385,7 @@ const NoiseMapper = () => {
     });
 
     return () => unsubscribe();
-  }, [isAuthReady, user]);
+  }, []);
 
   // --- Geolocation ---
   useEffect(() => {
@@ -472,12 +454,12 @@ const NoiseMapper = () => {
   };
 
   const saveMeasurement = async () => {
-    if (!user || !location || currentDb < 30) return;
+    if (!location || currentDb < 30) return;
 
     try {
       setIsUploading(true);
       await addDoc(collection(db, 'noise_measurements'), {
-        uid: user.uid,
+        uid: localUserId,
         db: Math.round(currentDb * 10) / 10,
         lat: location.lat,
         lng: location.lng,
@@ -505,7 +487,7 @@ const NoiseMapper = () => {
   };
 
   const onDrop = async (acceptedFiles: File[]) => {
-    if (!user || !location) return;
+    if (!location) return;
     
     const file = acceptedFiles[0];
     Papa.parse(file, {
@@ -517,7 +499,7 @@ const NoiseMapper = () => {
           for (const row of results.data as any[]) {
             if (row.db && row.lat && row.lng) {
               await addDoc(collection(db, 'noise_measurements'), {
-                uid: user.uid,
+                uid: localUserId,
                 db: row.db,
                 lat: row.lat,
                 lng: row.lng,
@@ -548,89 +530,29 @@ const NoiseMapper = () => {
     }
   };
 
-  const handleUpdateProfile = async () => {
-    if (!user || !newDisplayName.trim()) return;
-    setIsUpdatingProfile(true);
-    try {
-      await updateProfile(user, { displayName: newDisplayName });
-      setUser({ ...user, displayName: newDisplayName } as User);
-      alert("Profile updated successfully!");
-    } catch (error) {
-      console.error("Error updating profile:", error);
-      alert("Failed to update profile.");
-    } finally {
-      setIsUpdatingProfile(false);
-    }
-  };
-
   const handleDeleteAccount = async () => {
-    if (!user) return;
     const confirmDelete = window.confirm(
-      "Are you absolutely sure? This will permanently delete your account and ALL your noise measurements. This action cannot be undone."
+      "Are you absolutely sure? This will permanently delete ALL your noise measurements recorded from this device. This action cannot be undone."
     );
     if (!confirmDelete) return;
 
-    setIsUpdatingProfile(true);
     try {
       // 1. Delete all noise measurements
-      const q = query(collection(db, 'noise_measurements'), where('uid', '==', user.uid));
+      const q = query(collection(db, 'noise_measurements'), where('uid', '==', localUserId));
       const querySnapshot = await getDocs(q);
       const batch = writeBatch(db);
       querySnapshot.forEach((doc) => {
         batch.delete(doc.ref);
       });
       await batch.commit();
-
-      // 2. Delete the user document if it exists
-      await deleteDoc(doc(db, 'users', user.uid));
-
-      // 3. Delete the auth account
-      await deleteUser(user);
       
-      alert("Account and data deleted successfully.");
+      alert("Data deleted successfully.");
       window.location.reload();
     } catch (error: any) {
-      console.error("Error deleting account:", error);
-      if (error.code === 'auth/requires-recent-login') {
-        alert("This operation is sensitive and requires recent authentication. Please log out and log back in, then try again.");
-      } else {
-        alert("Failed to delete account. Please try again later.");
-      }
-    } finally {
-      setIsUpdatingProfile(false);
+      console.error("Error deleting data:", error);
+      alert("Failed to delete data. Please try again later.");
     }
   };
-
-  if (!isAuthReady) return null;
-
-  if (!user) {
-    return (
-      <div className="min-h-screen bg-[#050505] flex items-center justify-center p-6 font-sans relative overflow-hidden">
-        <div className="atmosphere" />
-        <motion.div 
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="max-w-md w-full glass-card p-12 text-center relative z-10"
-        >
-          <div className="w-20 h-20 bg-orange-500/10 rounded-3xl flex items-center justify-center mx-auto mb-8 rotate-12 group hover:rotate-0 transition-transform duration-500">
-            <Activity className="w-10 h-10 text-orange-500" />
-          </div>
-          <h1 className="text-4xl font-bold text-white mb-2 tracking-tighter">Urban Noise Mapper</h1>
-          <p className="text-[10px] text-orange-500 font-mono uppercase tracking-[0.2em] mb-8">App created by Aritra Pal</p>
-          <p className="text-gray-400 mb-10 leading-relaxed text-sm">
-            Join the mission to map urban noise pollution. Help us identify hotspots and create quieter, healthier cities through real-time data.
-          </p>
-          <button 
-            onClick={signIn}
-            className="w-full py-4 bg-white text-black hover:bg-orange-500 hover:text-white font-bold rounded-xl transition-all flex items-center justify-center gap-3 shadow-xl group"
-          >
-            <LogIn className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
-            Sign in with Google
-          </button>
-        </motion.div>
-      </div>
-    );
-  }
 
   return (
     <div className="min-h-screen bg-[#050505] text-white font-sans selection:bg-orange-500/30 relative overflow-x-hidden">
@@ -649,25 +571,15 @@ const NoiseMapper = () => {
           <div className="flex items-center gap-4">
             <button 
               onClick={() => setIsProfileOpen(true)}
-              className="hidden sm:flex flex-col items-end hover:opacity-80 transition-opacity"
-            >
-              <span className="text-[10px] font-mono text-gray-400 font-bold uppercase tracking-widest mb-0.5">Operator</span>
-              <span className="text-sm font-medium flex items-center gap-2">
-                {user.displayName}
-                <Settings className="w-3 h-3 text-orange-500" />
-              </span>
-            </button>
-            <button 
-              onClick={logOut}
               className="p-2 hover:bg-white/5 rounded-lg transition-colors text-gray-400 hover:text-white"
             >
-              <LogOut className="w-5 h-5" />
+              <Settings className="w-5 h-5" />
             </button>
           </div>
         </div>
       </header>
 
-      {/* Profile Modal */}
+      {/* Local Settings Modal */}
       <AnimatePresence>
         {isProfileOpen && (
           <div className="fixed inset-0 z-[100] flex items-center justify-center p-6">
@@ -687,7 +599,7 @@ const NoiseMapper = () => {
               <div className="p-6 border-b border-white/5 flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <UserCircle className="w-5 h-5 text-orange-500" />
-                  <h2 className="font-bold uppercase tracking-widest text-sm">Account Settings</h2>
+                  <h2 className="font-bold uppercase tracking-widest text-sm">Local Settings</h2>
                 </div>
                 <button 
                   onClick={() => setIsProfileOpen(false)}
@@ -701,54 +613,28 @@ const NoiseMapper = () => {
                 {/* User Info */}
                 <div className="flex items-center gap-4 p-4 bg-white/5 rounded-xl border border-white/5">
                   <div className="w-12 h-12 rounded-full bg-orange-500/20 flex items-center justify-center">
-                    {user.photoURL ? (
-                      <img src={user.photoURL} alt="" className="w-full h-full rounded-full object-cover" referrerPolicy="no-referrer" />
-                    ) : (
-                      <UserIcon className="w-6 h-6 text-orange-500" />
-                    )}
+                    <UserCircle className="w-6 h-6 text-orange-500" />
                   </div>
                   <div>
-                    <div className="text-sm font-bold">{user.displayName}</div>
+                    <div className="text-sm font-bold">Local Operator</div>
                     <div className="text-xs text-gray-500 flex items-center gap-1">
-                      <Mail className="w-3 h-3" />
-                      {user.email}
+                      ID: {localUserId.slice(0, 8)}...
                     </div>
                   </div>
-                </div>
-
-                {/* Edit Section */}
-                <div className="space-y-4">
-                  <div>
-                    <label className="text-[10px] font-mono text-gray-500 uppercase tracking-widest mb-2 block">Display Name</label>
-                    <input 
-                      type="text" 
-                      value={newDisplayName}
-                      onChange={(e) => setNewDisplayName(e.target.value)}
-                      className="w-full bg-black/30 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-orange-500/50 transition-colors"
-                      placeholder="Enter display name"
-                    />
-                  </div>
-                  <button 
-                    onClick={handleUpdateProfile}
-                    disabled={isUpdatingProfile || newDisplayName === user.displayName}
-                    className="w-full py-3 bg-white/5 hover:bg-white/10 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl text-sm font-bold transition-all"
-                  >
-                    {isUpdatingProfile ? "Updating..." : "Save Changes"}
-                  </button>
                 </div>
 
                 {/* Danger Zone */}
                 <div className="pt-6 border-t border-white/5">
                   <div className="mb-4">
                     <h3 className="text-xs font-bold text-red-500 uppercase tracking-widest mb-1">Danger Zone</h3>
-                    <p className="text-[10px] text-gray-500">Permanently delete your account and all associated noise data.</p>
+                    <p className="text-[10px] text-gray-500">Permanently delete all noise data recorded from this device.</p>
                   </div>
                   <button 
                     onClick={handleDeleteAccount}
                     className="w-full py-3 border border-red-500/30 hover:bg-red-500/10 text-red-500 rounded-xl text-sm font-bold transition-all flex items-center justify-center gap-2"
                   >
                     <Trash2 className="w-4 h-4" />
-                    Delete Account
+                    Clear Local Data
                   </button>
                 </div>
               </div>
@@ -756,7 +642,6 @@ const NoiseMapper = () => {
           </div>
         )}
       </AnimatePresence>
-
       <main className="max-w-7xl mx-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 relative z-10">
         {/* Left Column: Controls & Real-time */}
         <div className="lg:col-span-4 space-y-6">
@@ -881,7 +766,7 @@ const NoiseMapper = () => {
             <div className="p-6 border-b border-white/5 flex items-center justify-between bg-white/[0.02]">
               <h2 className="font-bold uppercase tracking-widest text-sm">My Recent Logs</h2>
               <span className="text-[10px] font-mono text-gray-500">
-                {measurements.filter(m => m.uid === user.uid).length} Records
+                {measurements.filter(m => m.uid === localUserId).length} Records
               </span>
             </div>
             <div className="max-h-[400px] overflow-y-auto">
@@ -897,7 +782,7 @@ const NoiseMapper = () => {
                 </thead>
                 <tbody className="divide-y divide-white/5">
                   <AnimatePresence mode="popLayout">
-                    {measurements.filter(m => m.uid === user.uid).map((m) => (
+                    {measurements.filter(m => m.uid === localUserId).map((m) => (
                       <motion.tr 
                         key={m.id}
                         initial={{ opacity: 0 }}
@@ -949,7 +834,7 @@ const NoiseMapper = () => {
                   </AnimatePresence>
                 </tbody>
               </table>
-              {measurements.filter(m => m.uid === user.uid).length === 0 && (
+              {measurements.filter(m => m.uid === localUserId).length === 0 && (
                 <div className="p-10 text-center text-gray-500 font-mono text-sm">
                   NO PERSONAL RECORDS FOUND
                 </div>
