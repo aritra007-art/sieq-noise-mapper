@@ -1,5 +1,5 @@
 {
-  "name": "Urban Noise Mapper",
+  "name": "Aritra's Noise Mapper",
   "description": "Map urban noise levels using phone-based measurements and GPS tagging. Generate heatmaps to visualize noise pollution in your area.",
   "requestFramePermissions": [
     "microphone",
