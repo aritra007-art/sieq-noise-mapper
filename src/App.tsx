@@ -34,7 +34,8 @@ import {
   Trees,
   Flower,
   Sun,
-  Moon
+  Moon,
+  ClipboardList
 } from 'lucide-react';
 import * as d3 from 'd3';
 import Papa from 'papaparse';
@@ -352,6 +353,9 @@ const NoiseMapper = () => {
   const [selectedCategory, setSelectedCategory] = useState('House');
   const [isCategoryDropdownOpen, setIsCategoryDropdownOpen] = useState(false);
   const [micError, setMicError] = useState<string | null>(null);
+  const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteStatus, setDeleteStatus] = useState<'idle' | 'success' | 'error'>('idle');
 
   const categories = ['House', 'Market', 'Park', 'Road', 'Residential Apartment', 'Office', 'Other'];
 
@@ -579,26 +583,36 @@ const NoiseMapper = () => {
   };
 
   const handleDeleteAccount = async () => {
-    const confirmDelete = window.confirm(
-      "Are you absolutely sure? This will permanently delete ALL your noise measurements recorded from this device. This action cannot be undone."
-    );
-    if (!confirmDelete) return;
+    setIsDeleting(true);
+    setDeleteStatus('idle');
 
     try {
       // 1. Delete all noise measurements
       const q = query(collection(db, 'noise_measurements'), where('uid', '==', localUserId));
       const querySnapshot = await getDocs(q);
+      
+      if (querySnapshot.empty) {
+        setIsDeleting(false);
+        setIsDeleteConfirmOpen(false);
+        return;
+      }
+
       const batch = writeBatch(db);
       querySnapshot.forEach((doc) => {
         batch.delete(doc.ref);
       });
       await batch.commit();
       
-      alert("Data deleted successfully.");
-      window.location.reload();
+      setDeleteStatus('success');
+      setTimeout(() => {
+        setIsDeleteConfirmOpen(false);
+        setDeleteStatus('idle');
+      }, 2000);
     } catch (error: any) {
       console.error("Error deleting data:", error);
-      alert("Failed to delete data. Please try again later.");
+      setDeleteStatus('error');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -685,7 +699,10 @@ const NoiseMapper = () => {
                     <p className="text-[10px] text-slate-500 dark:text-slate-400">Permanently delete all noise data recorded from this device.</p>
                   </div>
                   <button 
-                    onClick={handleDeleteAccount}
+                    onClick={() => {
+                      setIsProfileOpen(false);
+                      setIsDeleteConfirmOpen(true);
+                    }}
                     className="w-full py-3 border border-red-500/30 hover:bg-red-500/10 text-red-500 rounded-xl text-sm font-bold transition-all flex items-center justify-center gap-2"
                   >
                     <Trash2 className="w-4 h-4" />
@@ -920,10 +937,19 @@ const NoiseMapper = () => {
           {/* Recent Logs */}
           <div className="glass-card overflow-hidden">
             <div className="p-6 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-slate-50/50 dark:bg-slate-800/30">
-              <h2 className="font-bold uppercase tracking-widest text-sm text-slate-900 dark:text-slate-100">Global Noise Logs</h2>
-              <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400">
-                {measurements.length} Total Records
-              </span>
+              <div className="flex items-center gap-4">
+                <h2 className="font-bold uppercase tracking-widest text-sm text-slate-900 dark:text-slate-100">Global Noise Logs</h2>
+                <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400">
+                  {measurements.length} Total Records
+                </span>
+              </div>
+              <button 
+                onClick={() => setIsDeleteConfirmOpen(true)}
+                className="px-3 py-1.5 text-[10px] font-mono uppercase tracking-widest text-red-500 hover:bg-red-500/10 rounded-lg transition-colors flex items-center gap-2 border border-red-500/20"
+              >
+                <Trash2 className="w-3 h-3" />
+                Clear All My Logs
+              </button>
             </div>
             <div className="max-h-[500px] overflow-y-auto custom-scrollbar">
               <table className="w-full text-left border-collapse">
@@ -1079,17 +1105,94 @@ const NoiseMapper = () => {
       </main>
 
       {/* Footer Info */}
-      <footer className="max-w-7xl mx-auto p-6 border-t border-slate-100 dark:border-slate-800 mt-12 flex flex-col sm:flex-row items-center justify-between gap-4 text-[10px] font-mono text-slate-500 dark:text-slate-400 uppercase tracking-widest">
+      <footer className="max-w-7xl mx-auto p-6 border-t border-slate-100 dark:border-zinc-800 mt-12 flex flex-col sm:flex-row items-center justify-between gap-6 text-[10px] font-mono text-slate-500 dark:text-slate-400 uppercase tracking-widest">
         <div className="flex items-center gap-4">
           <span>System v1.0.5</span>
           <span>•</span>
           <span>Encrypted Transmission</span>
         </div>
-        <div className="flex items-center gap-2">
-          <Info className="w-3 h-3" />
-          <span>Data used for urban planning research</span>
+        
+        <div className="flex flex-col sm:flex-row items-center gap-6">
+          <a 
+            href="https://forms.gle/iV5Qu5EFpuoFLtz67" 
+            target="_blank" 
+            rel="noopener noreferrer"
+            className="px-5 py-2.5 bg-orange-500 hover:bg-orange-600 text-white rounded-xl transition-all flex items-center gap-2 font-sans font-bold text-xs normal-case tracking-normal shadow-lg shadow-orange-500/20"
+          >
+            <ClipboardList className="w-4 h-4" />
+            Take Survey
+          </a>
+          
+          <div className="flex items-center gap-2">
+            <Info className="w-3 h-3" />
+            <span>Data used for research</span>
+          </div>
         </div>
       </footer>
+
+      {/* Delete Confirmation Modal */}
+      <AnimatePresence>
+        {isDeleteConfirmOpen && (
+          <div className="fixed inset-0 z-[200] flex items-center justify-center p-6">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => !isDeleting && setIsDeleteConfirmOpen(false)}
+              className="absolute inset-0 bg-black/60 backdrop-blur-md"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="relative w-full max-w-md bg-white dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 rounded-2xl shadow-2xl overflow-hidden p-8 text-center"
+            >
+              <div className="w-16 h-16 bg-red-500/10 rounded-full flex items-center justify-center mx-auto mb-6">
+                <Trash2 className="w-8 h-8 text-red-500" />
+              </div>
+              
+              <h3 className="text-xl font-bold text-slate-900 dark:text-white mb-2">Clear All Your Logs?</h3>
+              <p className="text-sm text-slate-500 dark:text-slate-400 mb-8">
+                This will permanently delete all noise measurements recorded from this device. This action cannot be undone.
+              </p>
+
+              <div className="flex flex-col gap-3">
+                <button 
+                  disabled={isDeleting}
+                  onClick={handleDeleteAccount}
+                  className={cn(
+                    "w-full py-3 rounded-xl font-bold transition-all flex items-center justify-center gap-2",
+                    deleteStatus === 'success' ? "bg-emerald-500 text-white" : 
+                    deleteStatus === 'error' ? "bg-red-600 text-white" :
+                    "bg-red-500 hover:bg-red-600 text-white shadow-lg shadow-red-500/20"
+                  )}
+                >
+                  {isDeleting ? (
+                    <Activity className="w-4 h-4 animate-spin" />
+                  ) : deleteStatus === 'success' ? (
+                    <>
+                      <Check className="w-4 h-4" />
+                      Deleted Successfully
+                    </>
+                  ) : deleteStatus === 'error' ? (
+                    "Error Deleting"
+                  ) : (
+                    "Yes, Delete Everything"
+                  )}
+                </button>
+                
+                <button 
+                  disabled={isDeleting}
+                  onClick={() => setIsDeleteConfirmOpen(false)}
+                  className="w-full py-3 bg-slate-100 dark:bg-zinc-900 hover:bg-slate-200 dark:hover:bg-zinc-800 text-slate-600 dark:text-slate-300 rounded-xl font-bold transition-all"
+                >
+                  Cancel
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };
