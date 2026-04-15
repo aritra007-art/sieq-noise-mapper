@@ -35,7 +35,8 @@ import {
   Flower,
   Sun,
   Moon,
-  ClipboardList
+  ClipboardList,
+  BookOpen
 } from 'lucide-react';
 import * as d3 from 'd3';
 import Papa from 'papaparse';
@@ -335,9 +336,11 @@ const NoiseMapper = () => {
   const [location, setLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
+  const [isNotesOpen, setIsNotesOpen] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState('House');
   const [isCategoryDropdownOpen, setIsCategoryDropdownOpen] = useState(false);
   const [micError, setMicError] = useState<string | null>(null);
+  const [geoError, setGeoError] = useState<string | null>(null);
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteStatus, setDeleteStatus] = useState<'idle' | 'success' | 'error'>('idle');
@@ -387,15 +390,25 @@ const NoiseMapper = () => {
     if ("geolocation" in navigator) {
       const watchId = navigator.geolocation.watchPosition(
         (pos) => {
+          setGeoError(null);
           setLocation({
             lat: pos.coords.latitude,
             lng: pos.coords.longitude
           });
         },
-        (err) => console.error("Geolocation error:", err),
+        (err) => {
+          console.error("Geolocation error:", err);
+          if (err.code === err.PERMISSION_DENIED) {
+            setGeoError("Location access was denied. Please enable GPS and allow location access in your browser settings to tag measurements.");
+          } else {
+            setGeoError("Unable to retrieve your location. Please ensure GPS is enabled.");
+          }
+        },
         { enableHighAccuracy: true }
       );
       return () => navigator.geolocation.clearWatch(watchId);
+    } else {
+      setGeoError("Geolocation is not supported by your browser.");
     }
   }, []);
 
@@ -619,10 +632,28 @@ const NoiseMapper = () => {
             <Activity className="w-6 h-6 text-orange-500" />
             <div className="flex flex-col">
               <span className="font-bold tracking-tight text-lg uppercase leading-none dark:text-white">Noise Mapper</span>
-              <span className="text-[10px] text-slate-500 dark:text-white font-mono uppercase tracking-widest mt-1">App created by Aritra Pal</span>
             </div>
           </div>
           <div className="flex items-center gap-4">
+            <button 
+              onClick={() => setIsNotesOpen(true)}
+              className="p-2 hover:bg-slate-100 dark:hover:bg-zinc-800 rounded-lg transition-colors text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 flex items-center gap-2"
+              title="Noise Pollution Notes"
+            >
+              <BookOpen className="w-5 h-5" />
+              <span className="hidden sm:inline text-xs font-bold uppercase tracking-widest">Notes</span>
+            </button>
+            <button 
+              onClick={toggleTheme}
+              className="p-2 hover:bg-slate-100 dark:hover:bg-zinc-800 rounded-lg transition-colors text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100"
+              title={theme === 'light' ? "Switch to Dark Mode" : "Switch to Light Mode"}
+            >
+              {theme === 'light' ? (
+                <Moon className="w-5 h-5" />
+              ) : (
+                <Sun className="w-5 h-5 text-orange-500" />
+              )}
+            </button>
             <button 
               onClick={() => setIsProfileOpen(true)}
               className="p-2 hover:bg-slate-100 dark:hover:bg-zinc-800 rounded-lg transition-colors text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100"
@@ -699,9 +730,141 @@ const NoiseMapper = () => {
           </div>
         )}
       </AnimatePresence>
+
+      {/* Cinematic Notes Modal */}
+      <AnimatePresence>
+        {isNotesOpen && (
+          <div className="fixed inset-0 z-[200] flex items-center justify-center overflow-hidden">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsNotesOpen(false)}
+              className="absolute inset-0 bg-black/90 backdrop-blur-xl"
+            />
+            
+            <motion.div 
+              initial={{ opacity: 0, y: 50, scale: 0.9 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 50, scale: 0.9 }}
+              className="relative w-full h-full max-w-5xl p-8 md:p-16 overflow-y-auto custom-scrollbar flex flex-col items-center"
+            >
+              <button 
+                onClick={() => setIsNotesOpen(false)}
+                className="absolute top-8 right-8 p-3 bg-white/10 hover:bg-white/20 rounded-full text-white transition-all z-50"
+              >
+                <X className="w-6 h-6" />
+              </button>
+
+              <motion.div 
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.2 }}
+                className="text-center mb-16"
+              >
+                <h2 className="text-4xl md:text-6xl font-bold text-white mb-4 tracking-tighter">The Silent Threat</h2>
+                <p className="text-orange-500 font-mono uppercase tracking-[0.3em] text-sm">Understanding Noise Pollution</p>
+              </motion.div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-12 w-full">
+                <motion.div 
+                  initial={{ opacity: 0, x: -30 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: 0.4 }}
+                  className="space-y-8"
+                >
+                  <div className="flex items-center gap-4 mb-6">
+                    <div className="w-12 h-12 bg-red-500/20 rounded-2xl flex items-center justify-center">
+                      <AlertCircle className="w-6 h-6 text-red-500" />
+                    </div>
+                    <h3 className="text-2xl font-bold text-white">Precautions</h3>
+                  </div>
+                  
+                  {[
+                    { title: "Personal Protection", desc: "Use high-quality earplugs or noise-canceling headphones in environments exceeding 85dB." },
+                    { title: "Acoustic Barriers", desc: "Install sound-absorbing materials like heavy curtains, rugs, or double-pane windows at home." },
+                    { title: "Distance is Safety", desc: "Maintain maximum distance from loud sources like construction sites or industrial machinery." },
+                    { title: "Quiet Recovery", desc: "Schedule 'silence breaks' throughout the day to allow your auditory system to recover from stress." }
+                  ].map((item, i) => (
+                    <motion.div 
+                      key={i}
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.6 + (i * 0.1) }}
+                      className="group"
+                    >
+                      <h4 className="text-orange-500 font-bold mb-1 group-hover:translate-x-1 transition-transform">{item.title}</h4>
+                      <p className="text-slate-400 text-sm leading-relaxed">{item.desc}</p>
+                    </motion.div>
+                  ))}
+                </motion.div>
+
+                <motion.div 
+                  initial={{ opacity: 0, x: 30 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: 0.4 }}
+                  className="space-y-8"
+                >
+                  <div className="flex items-center gap-4 mb-6">
+                    <div className="w-12 h-12 bg-emerald-500/20 rounded-2xl flex items-center justify-center">
+                      <Check className="w-6 h-6 text-emerald-500" />
+                    </div>
+                    <h3 className="text-2xl font-bold text-white">The Benefits of Quiet</h3>
+                  </div>
+
+                  {[
+                    { title: "Mental Clarity", desc: "Quiet environments significantly lower cortisol levels and reduce overall psychological stress." },
+                    { title: "Restorative Sleep", desc: "Eliminating night-time noise pollution leads to deeper REM cycles and better physical recovery." },
+                    { title: "Cognitive Focus", desc: "Low noise levels improve concentration, memory retention, and creative problem-solving." },
+                    { title: "Heart Health", desc: "Long-term exposure to quiet environments is linked to lower blood pressure and reduced cardiac risk." }
+                  ].map((item, i) => (
+                    <motion.div 
+                      key={i}
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.6 + (i * 0.1) }}
+                      className="group text-right"
+                    >
+                      <h4 className="text-emerald-500 font-bold mb-1 group-hover:-translate-x-1 transition-transform">{item.title}</h4>
+                      <p className="text-slate-400 text-sm leading-relaxed">{item.desc}</p>
+                    </motion.div>
+                  ))}
+                </motion.div>
+              </div>
+
+              <motion.div 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 1.5 }}
+                className="mt-24 text-center border-t border-white/10 pt-12 w-full"
+              >
+                <p className="text-slate-500 font-mono text-[10px] uppercase tracking-[0.5em]">Protect your peace • Map your world</p>
+              </motion.div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
       <main className="max-w-7xl mx-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 relative z-10">
         {/* Left Column: Controls & Real-time */}
         <div className="lg:col-span-4 space-y-6">
+          {/* Error Messages */}
+          {(micError || geoError) && (
+            <div className="space-y-2">
+              {micError && (
+                <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl flex items-start gap-3">
+                  <AlertCircle className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
+                  <p className="text-[10px] text-red-500 leading-relaxed font-medium">{micError}</p>
+                </div>
+              )}
+              {geoError && (
+                <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl flex items-start gap-3">
+                  <MapPin className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+                  <p className="text-[10px] text-amber-500 leading-relaxed font-medium">{geoError}</p>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Recording Widget */}
           <div className="glass-card p-6 relative overflow-hidden group">
             <div className="absolute inset-0 bg-gradient-to-br from-orange-500/5 to-purple-500/5 opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
@@ -899,26 +1062,13 @@ const NoiseMapper = () => {
                 <h2 className="font-bold uppercase tracking-widest text-sm text-slate-900 dark:text-slate-100">Noise Heatmap</h2>
               </div>
               <div className="flex items-center gap-4">
-                <button 
-                  onClick={toggleTheme}
-                  className="p-2 bg-slate-50 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-lg hover:bg-slate-100 dark:hover:bg-zinc-800 transition-all group"
-                  title={theme === 'light' ? "Switch to Dark Mode" : "Switch to Light Mode"}
-                >
-                  {theme === 'light' ? (
-                    <Moon className="w-4 h-4 text-slate-600 group-hover:text-slate-900" />
-                  ) : (
-                    <Sun className="w-4 h-4 text-orange-500 group-hover:text-orange-400" />
-                  )}
-                </button>
-                <div className="flex items-center gap-4">
-                  <div className="flex items-center gap-2">
-                    <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: getNoiseColor(0) }} />
-                    <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400">0dB</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: getNoiseColor(140) }} />
-                    <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400">140dB</span>
-                  </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: getNoiseColor(0) }} />
+                  <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400">0dB</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: getNoiseColor(140) }} />
+                  <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400">140dB</span>
                 </div>
               </div>
             </div>
@@ -1105,9 +1255,7 @@ const NoiseMapper = () => {
       {/* Footer Info */}
       <footer className="max-w-7xl mx-auto p-6 border-t border-slate-100 dark:border-zinc-800 mt-12 flex flex-col sm:flex-row items-center justify-between gap-6 text-[10px] font-mono text-slate-500 dark:text-slate-400 uppercase tracking-widest">
         <div className="flex items-center gap-4">
-          <span>System v1.0.5</span>
-          <span>•</span>
-          <span>Encrypted Transmission</span>
+          <span>Website created by Aritra Pal</span>
         </div>
         
         <div className="flex flex-col sm:flex-row items-center gap-6">
